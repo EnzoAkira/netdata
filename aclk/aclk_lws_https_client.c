@@ -176,6 +176,7 @@ int aclk_send_https_request(char *method, char *host, char *port, char *url, cha
     context = lws_create_context(&info);
     if (!context) {
         error("Error creating LWS context");
+        freez(data);
         return 1;
     }
 
@@ -187,7 +188,7 @@ int aclk_send_https_request(char *method, char *host, char *port, char *url, cha
     i.context = context;
 
 #ifdef ACLK_SSL_ALLOW_SELF_SIGNED
-    i.ssl_connection = LCCSCF_USE_SSL | LCCSCF_ALLOW_SELFSIGNED | LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
+    i.ssl_connection = LCCSCF_USE_SSL | LCCSCF_ALLOW_SELFSIGNED | LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK | LCCSCF_ALLOW_INSECURE;
     info("Disabling SSL certificate checks");
 #else
     i.ssl_connection = LCCSCF_USE_SSL;

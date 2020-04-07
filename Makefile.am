@@ -60,6 +60,8 @@ dist_noinst_DATA = \
     package.json \
     docs \
     packaging/version \
+    packaging/dashboard.version \
+    packaging/dashboard.checksums \
     packaging/go.d.version \
     packaging/go.d.checksums \
     packaging/libwebsockets.version \
@@ -467,14 +469,18 @@ BACKENDS_PLUGIN_FILES = \
     backends/prometheus/backend_prometheus.h \
     $(NULL)
 
-CLAIM_PLUGIN_FILES = \
+CLAIM_FILES = \
     claim/claim.c \
     claim/claim.h \
     $(NULL)
 
-ACLK_PLUGIN_FILES = \
+ACLK_FILES = \
     aclk/aclk_common.c \
     aclk/aclk_common.h \
+    $(NULL)
+
+if ENABLE_ACLK
+ACLK_FILES += \
     aclk/agent_cloud_link.c \
     aclk/agent_cloud_link.h \
     aclk/mqtt.c \
@@ -484,6 +490,9 @@ ACLK_PLUGIN_FILES = \
     aclk/aclk_lws_https_client.c \
     aclk/aclk_lws_https_client.h \
     $(NULL)
+endif
+
+
 
 EXPORTING_ENGINE_FILES = \
     exporting/exporting_engine.c \
@@ -517,6 +526,11 @@ KINESIS_EXPORTING_FILES = \
     exporting/aws_kinesis/aws_kinesis.h \
     exporting/aws_kinesis/aws_kinesis_put_record.cc \
     exporting/aws_kinesis/aws_kinesis_put_record.h \
+    $(NULL)
+
+MONGODB_EXPORTING_FILES = \
+    exporting/mongodb/mongodb.c \
+    exporting/mongodb/mongodb.h \
     $(NULL)
 
 KINESIS_BACKEND_FILES = \
@@ -559,6 +573,7 @@ NETDATA_FILES = \
     $(LIBNETDATA_FILES) \
     $(API_PLUGIN_FILES) \
     $(BACKENDS_PLUGIN_FILES) \
+    $(EXPORTING_ENGINE_FILES) \
     $(CHECKS_PLUGIN_FILES) \
     $(HEALTH_PLUGIN_FILES) \
     $(IDLEJITTER_PLUGIN_FILES) \
@@ -568,14 +583,9 @@ NETDATA_FILES = \
     $(STREAMING_PLUGIN_FILES) \
     $(STATSD_PLUGIN_FILES) \
     $(WEB_PLUGIN_FILES) \
-    $(CLAIM_PLUGIN_FILES) \
+    $(CLAIM_FILES) \
+    $(ACLK_FILES) \
     $(NULL)
-
-if ENABLE_ACLK
-    NETDATA_FILES += \
-        $(ACLK_PLUGIN_FILES) \
-        $(NULL)
-endif
 
 if FREEBSD
     NETDATA_FILES += \
@@ -597,12 +607,6 @@ if LINUX
         $(TC_PLUGIN_FILES) \
         $(NULL)
 
-endif
-
-if ENABLE_EXPORTING
-    NETDATA_FILES += \
-        $(EXPORTING_ENGINE_FILES) \
-        $(NULL)
 endif
 
 NETDATA_COMMON_LIBS = \
@@ -633,6 +637,7 @@ if ENABLE_ACLK
 netdata_LDADD = \
     externaldeps/mosquitto/libmosquitto.a \
     externaldeps/libwebsockets/libwebsockets.a \
+    $(OPTIONAL_LIBCAP_LIBS) \
     $(NETDATA_COMMON_LIBS) \
     $(NULL)
 else
@@ -735,23 +740,13 @@ if ENABLE_PLUGIN_SLABINFO
         $(NULL)
 endif
 
-if ENABLE_EXPORTING
 if ENABLE_BACKEND_KINESIS
-    netdata_SOURCES += $(KINESIS_EXPORTING_FILES)
-    netdata_LDADD += $(OPTIONAL_KINESIS_LIBS)
-endif
-endif
-
-if ENABLE_BACKEND_KINESIS
-    netdata_SOURCES += $(KINESIS_BACKEND_FILES)
+    netdata_SOURCES += $(KINESIS_BACKEND_FILES) $(KINESIS_EXPORTING_FILES)
     netdata_LDADD += $(OPTIONAL_KINESIS_LIBS)
 endif
 
 if ENABLE_BACKEND_PROMETHEUS_REMOTE_WRITE
-if ENABLE_EXPORTING
-    netdata_SOURCES += $(PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES)
-endif
-    netdata_SOURCES += $(PROMETHEUS_REMOTE_WRITE_BACKEND_FILES)
+    netdata_SOURCES += $(PROMETHEUS_REMOTE_WRITE_BACKEND_FILES) $(PROMETHEUS_REMOTE_WRITE_EXPORTING_FILES)
     netdata_LDADD += $(OPTIONAL_PROMETHEUS_REMOTE_WRITE_LIBS)
     BUILT_SOURCES = \
         exporting/prometheus/remote_write/remote_write.pb.cc \
@@ -766,7 +761,7 @@ exporting/prometheus/remote_write/remote_write.pb.h: exporting/prometheus/remote
 endif
 
 if ENABLE_BACKEND_MONGODB
-    netdata_SOURCES += $(MONGODB_BACKEND_FILES)
+    netdata_SOURCES += $(MONGODB_BACKEND_FILES) $(MONGODB_EXPORTING_FILES)
     netdata_LDADD += $(OPTIONAL_MONGOC_LIBS)
 endif
 
@@ -900,6 +895,21 @@ if ENABLE_BACKEND_KINESIS
         -Wl,--wrap=kinesis_init \
         -Wl,--wrap=kinesis_put_record \
         -Wl,--wrap=kinesis_get_result \
+        $(NULL)
+endif
+if ENABLE_BACKEND_MONGODB
+    exporting_tests_exporting_engine_testdriver_SOURCES += $(MONGODB_EXPORTING_FILES)
+    exporting_tests_exporting_engine_testdriver_LDADD += $(OPTIONAL_MONGOC_LIBS)
+    exporting_tests_exporting_engine_testdriver_LDFLAGS += \
+        -Wl,--wrap=mongoc_init \
+        -Wl,--wrap=mongoc_uri_new_with_error \
+        -Wl,--wrap=mongoc_uri_get_option_as_int32 \
+        -Wl,--wrap=mongoc_uri_set_option_as_int32 \
+        -Wl,--wrap=mongoc_client_new_from_uri \
+        -Wl,--wrap=mongoc_client_set_appname \
+        -Wl,--wrap=mongoc_client_get_collection \
+        -Wl,--wrap=mongoc_uri_destroy \
+        -Wl,--wrap=mongoc_collection_insert_many \
         $(NULL)
 endif
 endif

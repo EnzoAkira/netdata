@@ -87,7 +87,7 @@ static void test_read_exporting_config(void **state)
     assert_ptr_not_equal(instance, NULL);
     assert_ptr_equal(instance->next, NULL);
     assert_ptr_equal(instance->engine, engine);
-    assert_int_equal(instance->config.type, BACKEND_TYPE_GRAPHITE);
+    assert_int_equal(instance->config.type, EXPORTING_CONNECTOR_TYPE_GRAPHITE);
     assert_string_equal(instance->config.destination, "localhost");
     assert_int_equal(instance->config.update_every, 1);
     assert_int_equal(instance->config.buffer_on_failures, 10);
@@ -761,6 +761,140 @@ static void test_flush_host_labels(void **state)
     assert_int_equal(buffer_strlen(instance->labels), 0);
 }
 
+static void test_can_send_rrdset(void **state)
+{
+    (void)*state;
+
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 1);
+
+    rrdset_flag_set(localhost->rrdset_root, RRDSET_FLAG_BACKEND_IGNORE);
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 0);
+    rrdset_flag_clear(localhost->rrdset_root, RRDSET_FLAG_BACKEND_IGNORE);
+
+    // TODO: test with a denying simple pattern
+
+    rrdset_flag_set(localhost->rrdset_root, RRDSET_FLAG_OBSOLETE);
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 0);
+    rrdset_flag_clear(localhost->rrdset_root, RRDSET_FLAG_OBSOLETE);
+
+    localhost->rrdset_root->rrd_memory_mode = RRD_MEMORY_MODE_NONE;
+    prometheus_exporter_instance->config.options |= EXPORTING_SOURCE_DATA_AVERAGE;
+    assert_int_equal(can_send_rrdset(prometheus_exporter_instance, localhost->rrdset_root), 0);
+}
+
+static void test_prometheus_name_copy(void **state)
+{
+    (void)*state;
+
+    char destination_name[PROMETHEUS_ELEMENT_MAX + 1];
+    assert_int_equal(prometheus_name_copy(destination_name, "test-name", PROMETHEUS_ELEMENT_MAX), 9);
+
+    assert_string_equal(destination_name, "test_name");
+}
+
+static void test_prometheus_label_copy(void **state)
+{
+    (void)*state;
+
+    char destination_name[PROMETHEUS_ELEMENT_MAX + 1];
+    assert_int_equal(prometheus_label_copy(destination_name, "test\"\\\nlabel", PROMETHEUS_ELEMENT_MAX), 15);
+
+    assert_string_equal(destination_name, "test\\\"\\\\\\\nlabel");
+}
+
+static void test_prometheus_units_copy(void **state)
+{
+    (void)*state;
+
+    char destination_name[PROMETHEUS_ELEMENT_MAX + 1];
+    assert_string_equal(prometheus_units_copy(destination_name, "test-units", PROMETHEUS_ELEMENT_MAX, 0), "_test_units");
+    assert_string_equal(destination_name, "_test_units");
+
+    assert_string_equal(prometheus_units_copy(destination_name, "%", PROMETHEUS_ELEMENT_MAX, 0), "_percent");
+    assert_string_equal(prometheus_units_copy(destination_name, "test-units/s", PROMETHEUS_ELEMENT_MAX, 0), "_test_units_persec");
+
+    assert_string_equal(prometheus_units_copy(destination_name, "KiB", PROMETHEUS_ELEMENT_MAX, 1), "_KB");
+}
+
+static void test_format_host_labels_prometheus(void **state)
+{
+    struct engine *engine = *state;
+    struct instance *instance = engine->instance_root;
+
+    instance->config.options |= EXPORTING_OPTION_SEND_CONFIGURED_LABELS;
+    instance->config.options |= EXPORTING_OPTION_SEND_AUTOMATIC_LABELS;
+
+    format_host_labels_prometheus(instance, localhost);
+    assert_string_equal(buffer_tostring(instance->labels), "key1=\"netdata\",key2=\"value2\"");
+}
+
+static void rrd_stats_api_v1_charts_allmetrics_prometheus(void **state)
+{
+    (void)state;
+
+    BUFFER *buffer = buffer_create(0);
+
+    localhost->hostname = strdupz("test_hostname");
+    localhost->rrdset_root->family = strdupz("test_family");
+    localhost->rrdset_root->context = strdupz("test_context");
+
+    expect_function_call(__wrap_now_realtime_sec);
+    will_return(__wrap_now_realtime_sec, 2);
+
+    expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+
+    rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(localhost, buffer, "test_server", "test_prefix", 0, 0);
+
+    assert_string_equal(
+        buffer_tostring(buffer),
+        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
+        "netdata_host_tags_info{key1=\"value1\",key2=\"value2\"} 1\n"
+        "netdata_host_tags{key1=\"value1\",key2=\"value2\"} 1\n"
+        "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\"} 690565856.0000000\n");
+
+    buffer_flush(buffer);
+
+    expect_function_call(__wrap_now_realtime_sec);
+    will_return(__wrap_now_realtime_sec, 2);
+
+    expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+
+    rrd_stats_api_v1_charts_allmetrics_prometheus_single_host(
+        localhost, buffer, "test_server", "test_prefix", 0, PROMETHEUS_OUTPUT_NAMES | PROMETHEUS_OUTPUT_TYPES);
+
+    assert_string_equal(
+        buffer_tostring(buffer),
+        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
+        "netdata_host_tags_info{key1=\"value1\",key2=\"value2\"} 1\n"
+        "netdata_host_tags{key1=\"value1\",key2=\"value2\"} 1\n"
+        "# COMMENT TYPE test_prefix_test_context gauge\n"
+        "test_prefix_test_context{chart=\"chart_name\",family=\"test_family\",dimension=\"dimension_name\"} 690565856.0000000\n");
+
+    buffer_flush(buffer);
+
+    expect_function_call(__wrap_now_realtime_sec);
+    will_return(__wrap_now_realtime_sec, 2);
+
+    expect_function_call(__wrap_exporting_calculate_value_from_stored_data);
+    will_return(__wrap_exporting_calculate_value_from_stored_data, pack_storage_number(27, SN_EXISTS));
+
+    rrd_stats_api_v1_charts_allmetrics_prometheus_all_hosts(localhost, buffer, "test_server", "test_prefix", 0, 0);
+
+    assert_string_equal(
+        buffer_tostring(buffer),
+        "netdata_info{instance=\"test_hostname\",application=\"(null)\",version=\"(null)\"} 1\n"
+        "netdata_host_tags_info{instance=\"test_hostname\",key1=\"value1\",key2=\"value2\"} 1\n"
+        "netdata_host_tags{instance=\"test_hostname\",key1=\"value1\",key2=\"value2\"} 1\n"
+        "test_prefix_test_context{chart=\"chart_id\",family=\"test_family\",dimension=\"dimension_id\",instance=\"test_hostname\"} 690565856.0000000\n");
+
+    free(localhost->rrdset_root->context);
+    free(localhost->rrdset_root->family);
+    free(localhost->hostname);
+    buffer_free(buffer);
+}
+
 #if ENABLE_PROMETHEUS_REMOTE_WRITE
 static void test_init_prometheus_remote_write_instance(void **state)
 {
@@ -977,6 +1111,7 @@ static void test_init_aws_kinesis_instance(void **state)
     expect_string(__wrap_kinesis_init, access_key_id, "test_auth_key_id");
     expect_string(__wrap_kinesis_init, secret_key, "test_secure_key");
     expect_value(__wrap_kinesis_init, timeout, 10000);
+
     assert_int_equal(init_aws_kinesis_instance(instance), 0);
 
     assert_ptr_equal(instance->worker, aws_kinesis_connector_worker);
@@ -1066,6 +1201,178 @@ static void test_aws_kinesis_connector_worker(void **state)
 }
 #endif // HAVE_KINESIS
 
+#if HAVE_MONGOC
+static void test_init_mongodb_instance(void **state)
+{
+    struct engine *engine = *state;
+    struct instance *instance = engine->instance_root;
+
+    instance->config.options = EXPORTING_SOURCE_DATA_AS_COLLECTED | EXPORTING_OPTION_SEND_NAMES;
+
+    struct mongodb_specific_config *connector_specific_config = callocz(1, sizeof(struct mongodb_specific_config));
+    instance->config.connector_specific_config = connector_specific_config;
+    connector_specific_config->database = strdupz("test_database");
+    connector_specific_config->collection = strdupz("test_collection");
+    instance->config.buffer_on_failures = 10;
+
+    expect_function_call(__wrap_mongoc_init);
+    expect_function_call(__wrap_mongoc_uri_new_with_error);
+    expect_string(__wrap_mongoc_uri_new_with_error, uri_string, "localhost");
+    expect_not_value(__wrap_mongoc_uri_new_with_error, error, NULL);
+    will_return(__wrap_mongoc_uri_new_with_error, 0xf1);
+
+    expect_function_call(__wrap_mongoc_uri_get_option_as_int32);
+    expect_value(__wrap_mongoc_uri_get_option_as_int32, uri, 0xf1);
+    expect_string(__wrap_mongoc_uri_get_option_as_int32, option, MONGOC_URI_SOCKETTIMEOUTMS);
+    expect_value(__wrap_mongoc_uri_get_option_as_int32, fallback, 1000);
+    will_return(__wrap_mongoc_uri_get_option_as_int32, 1000);
+
+    expect_function_call(__wrap_mongoc_uri_set_option_as_int32);
+    expect_value(__wrap_mongoc_uri_set_option_as_int32, uri, 0xf1);
+    expect_string(__wrap_mongoc_uri_set_option_as_int32, option, MONGOC_URI_SOCKETTIMEOUTMS);
+    expect_value(__wrap_mongoc_uri_set_option_as_int32, value, 1000);
+    will_return(__wrap_mongoc_uri_set_option_as_int32, true);
+
+    expect_function_call(__wrap_mongoc_client_new_from_uri);
+    expect_value(__wrap_mongoc_client_new_from_uri, uri, 0xf1);
+    will_return(__wrap_mongoc_client_new_from_uri, 0xf2);
+
+    expect_function_call(__wrap_mongoc_client_set_appname);
+    expect_value(__wrap_mongoc_client_set_appname, client, 0xf2);
+    expect_string(__wrap_mongoc_client_set_appname, appname, "netdata");
+    will_return(__wrap_mongoc_client_set_appname, true);
+
+    expect_function_call(__wrap_mongoc_client_get_collection);
+    expect_value(__wrap_mongoc_client_get_collection, client, 0xf2);
+    expect_string(__wrap_mongoc_client_get_collection, db, "test_database");
+    expect_string(__wrap_mongoc_client_get_collection, collection, "test_collection");
+    will_return(__wrap_mongoc_client_get_collection, 0xf3);
+
+    expect_function_call(__wrap_mongoc_uri_destroy);
+    expect_value(__wrap_mongoc_uri_destroy, uri, 0xf1);
+
+    assert_int_equal(init_mongodb_instance(instance), 0);
+
+    assert_ptr_equal(instance->worker, mongodb_connector_worker);
+    assert_ptr_equal(instance->start_batch_formatting, NULL);
+    assert_ptr_equal(instance->start_host_formatting, format_host_labels_json_plaintext);
+    assert_ptr_equal(instance->start_chart_formatting, NULL);
+    assert_ptr_equal(instance->metric_formatting, format_dimension_collected_json_plaintext);
+    assert_ptr_equal(instance->end_chart_formatting, NULL);
+    assert_ptr_equal(instance->end_host_formatting, flush_host_labels);
+    assert_ptr_equal(instance->end_batch_formatting, format_batch_mongodb);
+    assert_ptr_equal(instance->send_header, NULL);
+    assert_ptr_equal(instance->check_response, NULL);
+
+    assert_ptr_not_equal(instance->buffer, NULL);
+    buffer_free(instance->buffer);
+
+    assert_ptr_not_equal(instance->connector_specific_data, NULL);
+
+    struct mongodb_specific_data *connector_specific_data =
+        (struct mongodb_specific_data *)instance->connector_specific_data;
+    size_t number_of_buffers = 1;
+    struct bson_buffer *current_buffer = connector_specific_data->first_buffer;
+    while (current_buffer->next != connector_specific_data->first_buffer) {
+        current_buffer = current_buffer->next;
+        number_of_buffers++;
+        if (number_of_buffers == (size_t)(instance->config.buffer_on_failures + 1)) {
+            number_of_buffers = 0;
+            break;
+        }
+    }
+    assert_int_equal(number_of_buffers, 9);
+
+    free(connector_specific_config->database);
+    free(connector_specific_config->collection);
+}
+
+static void test_format_batch_mongodb(void **state)
+{
+    struct engine *engine = *state;
+    struct instance *instance = engine->instance_root;
+    struct stats *stats = &instance->stats;
+
+    struct mongodb_specific_data *connector_specific_data = mallocz(sizeof(struct mongodb_specific_data));
+    instance->connector_specific_data = (void *)connector_specific_data;
+
+    struct bson_buffer *current_buffer = callocz(1, sizeof(struct bson_buffer));
+    connector_specific_data->first_buffer = current_buffer;
+    connector_specific_data->first_buffer->next = current_buffer;
+    connector_specific_data->last_buffer = current_buffer;
+
+    BUFFER *buffer = buffer_create(0);
+    buffer_sprintf(buffer, "{ \"metric\": \"test_metric\" }\n");
+    instance->buffer = buffer;
+    stats->chart_buffered_metrics = 1;
+
+    assert_int_equal(format_batch_mongodb(instance), 0);
+
+    assert_int_equal(connector_specific_data->last_buffer->documents_inserted, 1);
+    assert_int_equal(buffer_strlen(buffer), 0);
+
+    size_t len;
+    char *str = bson_as_canonical_extended_json(connector_specific_data->last_buffer->insert[0], &len);
+    assert_string_equal(str, "{ \"metric\" : \"test_metric\" }");
+
+    freez(str);
+    buffer_free(buffer);
+}
+
+static void test_mongodb_connector_worker(void **state)
+{
+    struct engine *engine = *state;
+    struct instance *instance = engine->instance_root;
+
+    struct mongodb_specific_config *connector_specific_config = callocz(1, sizeof(struct mongodb_specific_config));
+    instance->config.connector_specific_config = connector_specific_config;
+    connector_specific_config->database = strdupz("test_database");
+
+    struct mongodb_specific_data *connector_specific_data = callocz(1, sizeof(struct mongodb_specific_data));
+    instance->connector_specific_data = (void *)connector_specific_data;
+    connector_specific_config->collection = strdupz("test_collection");
+
+    struct bson_buffer *buffer = callocz(1, sizeof(struct bson_buffer));
+    buffer->documents_inserted = 1;
+    connector_specific_data->first_buffer = buffer;
+    connector_specific_data->first_buffer->next = buffer;
+
+    connector_specific_data->first_buffer->insert = callocz(1, sizeof(bson_t *));
+    bson_error_t bson_error;
+    connector_specific_data->first_buffer->insert[0] =
+        bson_new_from_json((const uint8_t *)"{ \"test_key\" : \"test_value\" }", -1, &bson_error);
+
+    connector_specific_data->client = mongoc_client_new("mongodb://localhost");
+    connector_specific_data->collection =
+        __real_mongoc_client_get_collection(connector_specific_data->client, "test_database", "test_collection");
+
+    expect_function_call(__wrap_mongoc_collection_insert_many);
+    expect_value(__wrap_mongoc_collection_insert_many, collection, connector_specific_data->collection);
+    expect_value(__wrap_mongoc_collection_insert_many, documents, connector_specific_data->first_buffer->insert);
+    expect_value(__wrap_mongoc_collection_insert_many, n_documents, 1);
+    expect_value(__wrap_mongoc_collection_insert_many, opts, NULL);
+    expect_value(__wrap_mongoc_collection_insert_many, reply, NULL);
+    expect_not_value(__wrap_mongoc_collection_insert_many, error, NULL);
+    will_return(__wrap_mongoc_collection_insert_many, true);
+
+    mongodb_connector_worker(instance);
+
+    assert_ptr_equal(connector_specific_data->first_buffer->insert, NULL);
+    assert_int_equal(connector_specific_data->first_buffer->documents_inserted, 0);
+    assert_ptr_equal(connector_specific_data->first_buffer, connector_specific_data->first_buffer->next);
+
+    struct stats *stats = &instance->stats;
+    assert_int_equal(stats->chart_sent_bytes, 60);
+    assert_int_equal(stats->chart_transmission_successes, 1);
+    assert_int_equal(stats->chart_receptions, 1);
+    assert_int_equal(stats->chart_sent_bytes, 60);
+    assert_int_equal(stats->chart_sent_metrics, 0);
+
+    free(connector_specific_config->database);
+    free(connector_specific_config->collection);
+}
+#endif // HAVE_MONGOC
+
 int main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -1138,6 +1445,19 @@ int main(void)
     int test_res = cmocka_run_group_tests_name("exporting_engine", tests, NULL, NULL) +
                    cmocka_run_group_tests_name("labels_in_exporting_engine", label_tests, NULL, NULL);
 
+    const struct CMUnitTest prometheus_web_api_tests[] = {
+        cmocka_unit_test_setup_teardown(test_can_send_rrdset, setup_prometheus, teardown_prometheus),
+        cmocka_unit_test_setup_teardown(test_prometheus_name_copy, setup_prometheus, teardown_prometheus),
+        cmocka_unit_test_setup_teardown(test_prometheus_label_copy, setup_prometheus, teardown_prometheus),
+        cmocka_unit_test_setup_teardown(test_prometheus_units_copy, setup_prometheus, teardown_prometheus),
+        cmocka_unit_test_setup_teardown(
+            test_format_host_labels_prometheus, setup_configured_engine, teardown_configured_engine),
+        cmocka_unit_test_setup_teardown(
+            rrd_stats_api_v1_charts_allmetrics_prometheus, setup_prometheus, teardown_prometheus),
+    };
+
+    test_res += cmocka_run_group_tests_name("prometheus_web_api", prometheus_web_api_tests, NULL, NULL);
+
 #if ENABLE_PROMETHEUS_REMOTE_WRITE
     const struct CMUnitTest prometheus_remote_write_tests[] = {
         cmocka_unit_test_setup_teardown(
@@ -1166,6 +1486,19 @@ int main(void)
     };
 
     test_res += cmocka_run_group_tests_name("kinesis_exporting_connector", kinesis_tests, NULL, NULL);
+#endif
+
+#if HAVE_MONGOC
+    const struct CMUnitTest mongodb_tests[] = {
+        cmocka_unit_test_setup_teardown(
+            test_init_mongodb_instance, setup_configured_engine, teardown_configured_engine),
+        cmocka_unit_test_setup_teardown(
+            test_format_batch_mongodb, setup_configured_engine, teardown_configured_engine),
+        cmocka_unit_test_setup_teardown(
+            test_mongodb_connector_worker, setup_configured_engine, teardown_configured_engine),
+    };
+
+    test_res += cmocka_run_group_tests_name("mongodb_exporting_connector", mongodb_tests, NULL, NULL);
 #endif
 
     return test_res;

@@ -12,6 +12,10 @@ ARG RELEASE_CHANNEL=nightly
 
 ENV JUDY_VER 1.0.5
 
+ARG CFLAGS
+
+ENV CFLAGS=$CFLAGS
+
 ARG EXTRA_INSTALL_OPTS
 
 ENV EXTRA_INSTALL_OPTS=$EXTRA_INSTALL_OPTS
@@ -43,6 +47,7 @@ RUN mkdir -p /app/usr/sbin/ \
     mv /etc/netdata         /app/etc/ && \
     mv /usr/sbin/netdata    /app/usr/sbin/ && \
     mv /usr/sbin/netdata-claim.sh    /app/usr/sbin/ && \
+    mv /usr/sbin/netdatacli    /app/usr/sbin/ && \
     mv packaging/docker/run.sh        /app/usr/sbin/ && \
     cp -rp /deps/* /app/usr/local/ && \
     chmod +x /app/usr/sbin/run.sh

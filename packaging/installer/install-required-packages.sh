@@ -192,7 +192,7 @@ get_os_release() {
   eval "$(grep -E "^(NAME|ID|ID_LIKE|VERSION|VERSION_ID)=" "${os_release_file}")"
   for x in "${ID}" ${ID_LIKE}; do
     case "${x,,}" in
-      alpine | arch | centos | debian | fedora | gentoo | sabayon | rhel | ubuntu | suse | opensuse-leap | sles | clear-linux-os)
+      alpine | arch | centos | clear-linux-os | debian | fedora | gentoo | manjaro | opensuse-leap | rhel | sabayon | sles | suse | ubuntu)
         distribution="${x}"
         version="${VERSION_ID}"
         codename="${VERSION}"
@@ -1047,7 +1047,9 @@ declare -A pkg_zip=(
 )
 
 validate_package_trees() {
-  validate_tree_${tree}
+  if type -t validate_tree_${tree} > /dev/null; then
+    validate_tree_${tree}
+  fi
 }
 
 validate_installed_package() {
@@ -1265,14 +1267,6 @@ validate_install_apt_get() {
 }
 
 install_apt_get() {
-  # download the latest package info
-  if [ "${DRYRUN}" -eq 1 ]; then
-    echo >&2 " >> IMPORTANT << "
-    echo >&2 "    Please make sure your system is up to date"
-    echo >&2 "    by running:  ${sudo} apt-get update  "
-    echo >&2
-  fi
-
   local opts=""
   if [ "${NON_INTERACTIVE}" -eq 1 ]; then
     echo >&2 "Running in non-interactive mode"
@@ -1282,6 +1276,22 @@ install_apt_get() {
   fi
 
   read -r -a apt_opts <<< "$opts"
+
+  # update apt repository caches
+
+  echo >&2 "NOTE: Running apt-get update and updating your APT caches ..."
+  if [ "${version}" = 8 ]; then
+    echo >&2 "WARNING: You seem to be on Debian 8 (jessie) which is old enough we have to disable Check-Valid-Until checks"
+    if ! cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2> /dev/null | grep -q jessie-backports; then
+      echo >&2 "We also have to enable the jessie-backports repository"
+      if prompt "Is this okay?"; then
+        ${sudo} /bin/sh -c 'echo "deb http://archive.debian.org/debian/ jessie-backports main contrib non-free" >> /etc/apt/sources.list.d/99-archived.list'
+      fi
+    fi
+    run ${sudo} apt-get "${apt_opts[@]}" -o Acquire::Check-Valid-Until=false update
+  else
+    run ${sudo} apt-get "${apt_opts[@]}" update
+  fi
 
   # install the required packages
   run ${sudo} apt-get "${apt_opts[@]}" install "${@}"
@@ -1712,7 +1722,7 @@ while [ -n "${1}" ]; do
     netdata-all)
       PACKAGES_NETDATA=1
       PACKAGES_NETDATA_NODEJS=1
-      if [ "${pv}" -eq 2 ] ; then
+      if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
         PACKAGES_NETDATA_PYTHON_MYSQL=1
         PACKAGES_NETDATA_PYTHON_POSTGRES=1
@@ -1742,7 +1752,7 @@ while [ -n "${1}" ]; do
       ;;
 
     python-mysql | mysql-python | mysqldb | netdata-mysql)
-      if [ "${pv}" -eq 2 ] ; then
+      if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
         PACKAGES_NETDATA_PYTHON_MYSQL=1
       else
@@ -1752,7 +1762,7 @@ while [ -n "${1}" ]; do
       ;;
 
     python-postgres | postgres-python | psycopg2 | netdata-postgres)
-      if [ "${pv}" -eq 2 ] ; then
+      if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
         PACKAGES_NETDATA_PYTHON_POSTGRES=1
       else
@@ -1762,7 +1772,7 @@ while [ -n "${1}" ]; do
       ;;
 
     python-pymongo)
-      if [ "${pv}" -eq 2 ] ; then
+      if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
         PACKAGES_NETDATA_PYTHON_MONGO=1
       else
@@ -1795,7 +1805,7 @@ while [ -n "${1}" ]; do
     demo | all)
       PACKAGES_NETDATA=1
       PACKAGES_NETDATA_NODEJS=1
-      if [ "${pv}" -eq 2 ] ; then
+      if [ "${pv}" -eq 2 ]; then
         PACKAGES_NETDATA_PYTHON=1
         PACKAGES_NETDATA_PYTHON_MYSQL=1
         PACKAGES_NETDATA_PYTHON_POSTGRES=1
